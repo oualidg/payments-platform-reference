@@ -1,0 +1,30 @@
+# ==============================================================================
+# Alertmanager Configuration — Payments Platform
+#
+# Phase 1 — alerts visible in Grafana UI only.
+# No external notification channels configured.
+# Email, Slack, or Telegram can be added here when needed.
+# ==============================================================================
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: grafana-silence
+  group_by:
+    - alertname
+    - service
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 12h
+
+receivers:
+  - name: grafana-silence
+
+inhibit_rules:
+  - source_matchers:
+      - alertname="ServiceDown"
+    target_matchers:
+      - alertname=~".*"
+    equal:
+      - service

@@ -1,0 +1,57 @@
+# ==============================================================================
+# Prometheus Configuration — Payments Platform
+#
+# Scrapes metrics from all three application services every 15 seconds.
+# Alert rules are loaded from the rules/ directory.
+#
+# Note: utility-account uses /api/prometheus (management.endpoints.web.base-path=/api)
+#       mpesa-gateway and provisioning-service use /actuator/prometheus (default)
+# ==============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: production
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+
+  - job_name: utility-account
+    metrics_path: /api/prometheus
+    static_configs:
+      - targets:
+          - utility-account:8080
+        labels:
+          service: utility-account
+
+  - job_name: mpesa-gateway
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - mpesa-gateway:8081
+        labels:
+          service: mpesa-gateway
+
+  - job_name: provisioning-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - provisioning-service:8082
+        labels:
+          service: provisioning-service
+
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - localhost:9090
+        labels:
+          service: prometheus

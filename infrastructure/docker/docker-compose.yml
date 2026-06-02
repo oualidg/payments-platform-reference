@@ -1,0 +1,269 @@
+# ==============================================================================
+# Docker Compose — Payments Platform Production Stack
+#
+# Services:
+#   - utility-account:      Spring Boot billing API (internal only, port 8080)
+#   - mpesa-gateway:        M-Pesa C2B callback service (internal only, port 8081)
+#   - provisioning-service: Async payment processing service (internal only, port 8082)
+#   - nginx:                Reverse proxy + Angular static files (public, port 80)
+#   - rabbitmq:             Message broker (internal only, ports 5672/15672)
+#   - mongodb:              M-Pesa event store (internal only, port 27017)
+#
+# PostgreSQL is intentionally excluded — it runs as a standalone container
+# with --restart always and a named volume (postgres-data), started once and
+# never touched by deployments. This prevents data loss during redeployments.
+#
+# Network:
+#   All services share the payments-network bridge network.
+#   Services are reachable from each other via container name as hostname.
+#   Only Nginx is exposed publicly on port 80.
+#
+# Secrets:
+#   Loaded from .env file in the same directory as this file.
+#   The .env file is never committed to Git.
+#
+# Logs:
+#   All services write logs to bind-mounted host directories.
+#   Host path: /opt/payments/logs/
+#   utility-account:      /opt/payments/logs/utility-account/
+#   mpesa-gateway:        /opt/payments/logs/mpesa-gateway/
+#   provisioning-service: /opt/payments/logs/provisioning-service/
+#   nginx:                /opt/payments/logs/nginx/
+#
+# Memory:
+#   Explicit memory limits are set per service so the JVM's
+#   -XX:MaxRAMPercentage=75.0 flag allocates heap correctly relative
+#   to the container limit rather than the full host RAM (16GB).
+# ==============================================================================
+
+services:
+
+  # ----------------------------------------------------------------------------
+  # Utility Account Service
+  #
+  # - Billing core — accounts, customers, payments, providers
+  # - Connects to PostgreSQL running outside this Compose stack
+  # - Internal only — only reachable from Nginx and Provisioning Service
+  # - mem_limit 768MB → JVM heap ceiling ~576MB
+  # ----------------------------------------------------------------------------
+  utility-account:
+    image: ghcr.io/oualidg/utility-account:latest
+    ports:
+      - "8080:8080"
+    container_name: utility-account
+    restart: unless-stopped
+    mem_limit: 768m
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DB_URL: jdbc:postgresql://172.17.0.1:5432/postgres
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
+      APP_JWT_COOKIE_SECURE: "true"
+    volumes:
+      - ./logs/utility-account:/app/logs
+    networks:
+      - payments-network
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8080 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ----------------------------------------------------------------------------
+  # M-Pesa Gateway
+  #
+  # - Terminates Safaricom C2B callbacks (validation + confirmation)
+  # - Persists payment events to MongoDB before acknowledging callbacks
+  # - Publishes provisioning requests to RabbitMQ via Outbox Pattern
+  # - Consumes provisioning results and updates event state
+  # - Internal only — routed from Nginx on mpesa.oualidg.dev
+  # - mem_limit 512MB → JVM heap ceiling ~384MB
+  #
+  # Graceful shutdown: stop_grace_period=35s allows the outbox processor
+  # and in-flight RabbitMQ message handling to complete before the container
+  # is forcibly stopped. Spring timeout is 30s (set via SPRING_LIFECYCLE).
+  # ----------------------------------------------------------------------------
+  mpesa-gateway:
+    image: ghcr.io/oualidg/mpesa-gateway:latest
+    ports:
+      - "8081:8081"
+    container_name: mpesa-gateway
+    restart: unless-stopped
+    mem_limit: 512m
+    stop_grace_period: 35s
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE: 30s
+      MONGO_USER: ${MONGO_USER}
+      MONGO_PASS: ${MONGO_PASS}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASS: ${RABBITMQ_PASS}
+      UA_SERVICE_BASE_URL: http://utility-account:8080
+      UA_SERVICE_API_KEY: ${UA_SERVICE_API_KEY}
+      CALLBACK_TOKEN: ${CALLBACK_TOKEN}
+      MPESA_SHORT_CODE: ${MPESA_SHORT_CODE}
+    volumes:
+      - ./logs/mpesa-gateway:/app/logs
+    networks:
+      - payments-network
+    depends_on:
+      utility-account:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+
+  # ----------------------------------------------------------------------------
+  # Provisioning Service
+  #
+  # - Stateless — owns no database
+  # - Consumes PaymentProvisioningMessage from RabbitMQ provisioning.queue
+  # - Posts payments to the UA Service with retry + circuit breaker
+  # - Publishes ProvisioningResultMessage back to the gateway result queue
+  # - Internal only — no external exposure
+  # - mem_limit 384MB → JVM heap ceiling ~288MB
+  #
+  # Safe to restart at any time — in-flight retry attempts reset on restart
+  # but correctness is preserved by UA Service idempotency and RabbitMQ
+  # redelivery.
+  # ----------------------------------------------------------------------------
+  provisioning-service:
+    image: ghcr.io/oualidg/provisioning-service:latest
+    container_name: provisioning-service
+    restart: unless-stopped
+    mem_limit: 384m
+    stop_grace_period: 35s
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE: 30s
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASS: ${RABBITMQ_PASS}
+      UA_SERVICE_URL: http://utility-account:8080
+      UA_API_KEY_MPESA: ${UA_SERVICE_API_KEY}
+    volumes:
+      - ./logs/provisioning-service:/app/logs
+    networks:
+      - payments-network
+    depends_on:
+      utility-account:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # ----------------------------------------------------------------------------
+  # Nginx — Reverse Proxy + Static File Server
+  #
+  # - Serves Angular static files on utility.oualidg.dev
+  # - Proxies /api/* to utility-account
+  # - Routes Safaricom callbacks to mpesa-gateway on mpesa.oualidg.dev
+  # - Only service exposed to the host on port 80
+  # - nginx.conf is bind-mounted from the server — updated without rebuilding
+  # - mem_limit 128MB — Nginx is lightweight
+  # ----------------------------------------------------------------------------
+  nginx:
+    image: ghcr.io/oualidg/utility-account-ui:latest
+    container_name: nginx
+    restart: unless-stopped
+    mem_limit: 128m
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./logs/nginx:/var/log/nginx
+    networks:
+      - payments-network
+    depends_on:
+      utility-account:
+        condition: service_healthy
+
+  # ----------------------------------------------------------------------------
+  # RabbitMQ — Message Broker
+  #
+  # - Routes provisioning requests and results between gateway and provisioning
+  # - Management UI available internally on port 15672 (not exposed publicly)
+  # - Virtual host /payments isolates payment messaging
+  # - Durable queues and persistent messages survive broker restarts
+  # - mem_limit 512MB — sufficient for single-node at expected volume
+  # ----------------------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "15672:15672"
+    container_name: rabbitmq
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf
+      - ./rabbitmq/definitions.json:/etc/rabbitmq/definitions.json
+    networks:
+      - payments-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ----------------------------------------------------------------------------
+  # MongoDB — M-Pesa Event Store
+  #
+  # - Stores MpesaEvent documents and OutboxEntry records for the Gateway
+  # - Runs as a single-node replica set (rs0) to support MongoDB transactions
+  #   required by the Outbox Pattern atomic write (event + outbox entry)
+  # - Not shared with other services — Gateway owns this database exclusively
+  # - mem_limit 512MB — sufficient for event-oriented document workload
+  #
+  # NOTE: Single-node replica set must be initialised once after first start:
+  #   docker exec -it mongodb mongosh --eval "rs.initiate()"
+  # ----------------------------------------------------------------------------
+  mongodb:
+    image: mongo:7
+    container_name: mongodb
+    restart: unless-stopped
+    mem_limit: 512m
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all", "--keyFile", "/etc/mongodb/mongodb.key"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASS}
+      MONGO_INITDB_DATABASE: mpesa
+    volumes:
+      - mongodb-data:/data/db
+      - ./mongodb.key:/etc/mongodb/mongodb.key:ro
+    networks:
+      - payments-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+# ------------------------------------------------------------------------------
+# Network
+# Bridge network shared by all services in this stack.
+# Docker's internal DNS resolves container names to IPs automatically.
+# ------------------------------------------------------------------------------
+networks:
+  payments-network:
+    driver: bridge
+
+# ------------------------------------------------------------------------------
+# Volumes
+# Named volumes for RabbitMQ and MongoDB data persistence.
+# These persist across container restarts and redeployments.
+# PostgreSQL uses its own named volume (postgres-data) managed outside
+# this Compose stack.
+# ------------------------------------------------------------------------------
+volumes:
+  rabbitmq-data:
+  mongodb-data:

@@ -1,0 +1,88 @@
+// ==============================================================================
+// Grafana Alloy Configuration — Payments Platform
+//
+// Responsibilities:
+//   1. Scrape /actuator/prometheus from mpesa-gateway and provisioning-service
+//   2. Scrape /api/prometheus from utility-account
+//   3. Tail Docker container logs and ship to Loki
+//
+// All application services are reachable by container name on payments-network.
+// ==============================================================================
+
+// ==============================================================================
+// Prometheus Scraping
+// ==============================================================================
+
+prometheus.scrape "mpesa_gateway" {
+  targets = [{
+    __address__ = "mpesa-gateway:8081",
+    service     = "mpesa-gateway",
+  }]
+  metrics_path     = "/actuator/prometheus"
+  scrape_interval  = "15s"
+  forward_to       = [prometheus.remote_write.local.receiver]
+}
+
+prometheus.scrape "provisioning_service" {
+  targets = [{
+    __address__ = "provisioning-service:8082",
+    service     = "provisioning-service",
+  }]
+  metrics_path     = "/actuator/prometheus"
+  scrape_interval  = "15s"
+  forward_to       = [prometheus.remote_write.local.receiver]
+}
+
+prometheus.scrape "utility_account" {
+  targets = [{
+    __address__ = "utility-account:8080",
+    service     = "utility-account",
+  }]
+  metrics_path     = "/api/prometheus"
+  scrape_interval  = "15s"
+  forward_to       = [prometheus.remote_write.local.receiver]
+}
+
+prometheus.remote_write "local" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}
+
+// ==============================================================================
+// Docker Log Collection
+// ==============================================================================
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  // Use container name as the service label
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "service"
+  }
+
+  // Keep only our application containers — drop observability stack self-logs
+  rule {
+    source_labels = ["service"]
+    regex         = "utility-account|mpesa-gateway|provisioning-service|nginx|rabbitmq|mongodb"
+    action        = "keep"
+  }
+}
+
+loki.source.docker "containers" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.write.local.receiver]
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

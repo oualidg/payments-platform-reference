@@ -1,0 +1,140 @@
+# ==============================================================================
+# Docker Compose — Observability Stack
+#
+# Services:
+#   - prometheus:     Metrics collection and storage (internal only)
+#   - loki:           Log aggregation and storage (internal only)
+#   - alloy:          Metrics scraping + log shipping agent (internal only)
+#   - alertmanager:   Alert routing and management (internal only)
+#   - grafana:        Dashboards and alerting UI (port 3000)
+#
+# Network:
+#   Joins the existing payments-network so Prometheus can reach
+#   application services by container name.
+#
+# Volumes:
+#   Named volumes for all stateful services — persists across restarts.
+#
+# Secrets:
+#   GRAFANA_USER and GRAFANA_PASSWORD loaded from .env file.
+# ==============================================================================
+
+services:
+
+  # ----------------------------------------------------------------------------
+  # Prometheus — Metrics Collection
+  #
+  # - Scrapes /actuator/prometheus from mpesa-gateway and provisioning-service
+  # - Scrapes /api/prometheus from utility-account (custom base path)
+  # - 30 day retention
+  # - Config reload via POST /-/reload without container restart
+  # ----------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v3.4.0
+    container_name: prometheus
+    restart: unless-stopped
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+      - --web.enable-lifecycle
+    networks:
+      - payments-network
+
+  # ----------------------------------------------------------------------------
+  # Loki — Log Aggregation
+  #
+  # - Receives logs shipped by Alloy from Docker container stdout
+  # - Queried by Grafana for log search and correlation
+  # ----------------------------------------------------------------------------
+  loki:
+    image: grafana/loki:3.4.2
+    container_name: loki
+    restart: unless-stopped
+    volumes:
+      - ./observability/loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    command: -config.file=/etc/loki/loki.yml
+    networks:
+      - payments-network
+
+  # ----------------------------------------------------------------------------
+  # Alloy — Metrics Scraping + Log Shipping Agent
+  #
+  # - Scrapes /actuator/prometheus from application services
+  # - Tails Docker container logs via Docker API and ships to Loki
+  # - Mounts Docker socket read-only for container log discovery
+  # ----------------------------------------------------------------------------
+  alloy:
+    image: grafana/alloy:v1.8.3
+    container_name: alloy
+    restart: unless-stopped
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: run /etc/alloy/config.alloy
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - payments-network
+
+  # ----------------------------------------------------------------------------
+  # Alertmanager — Alert Routing
+  #
+  # - Evaluates Prometheus alert rules
+  # - Internal only — alerts visible via Grafana UI
+  # ----------------------------------------------------------------------------
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    container_name: alertmanager
+    restart: unless-stopped
+    volumes:
+      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    networks:
+      - payments-network
+
+  # ----------------------------------------------------------------------------
+  # Grafana — Dashboards and Alerting UI
+  #
+  # - Connects to Prometheus and Loki as datasources
+  # - Datasources and dashboards provisioned automatically on startup
+  # - Accessible on port 3000 from local network
+  # ----------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:11.6.1
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - payments-network
+
+volumes:
+  prometheus-data:
+  loki-data:
+  alertmanager-data:
+  grafana-data:
+
+networks:
+  payments-network:
+    external: true
+    name: payments_payments-network

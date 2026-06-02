@@ -1,0 +1,18 @@
+# ==============================================================================
+# Grafana Dashboard Provisioning — Payments Platform
+#
+# Loads dashboards from the dashboards/ directory on startup.
+# Add dashboard JSON files to observability/grafana/provisioning/dashboards/
+# to have them appear automatically in Grafana.
+# ==============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: payments-platform
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

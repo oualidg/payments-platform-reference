@@ -1,0 +1,178 @@
+# ==============================================================================
+# Prometheus Alert Rules — Payments Platform
+#
+# Covers the critical signals defined in the architecture spec:
+#   - Confirmation callback failures
+#   - Outbox pending backlog
+#   - provisioning.queue depth (via RabbitMQ)
+#   - DLQ depth
+#   - SUSPENDED transition rate spike
+#   - UA Service 5xx and 429 rates
+#   - Service availability
+# ==============================================================================
+
+groups:
+
+  # ----------------------------------------------------------------------------
+  # Service Availability
+  # ----------------------------------------------------------------------------
+  - name: availability
+    rules:
+
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} is down"
+          description: "Prometheus cannot scrape {{ $labels.service }}. The service may be unreachable or crashed."
+
+  # ----------------------------------------------------------------------------
+  # M-Pesa Gateway — Callbacks
+  # ----------------------------------------------------------------------------
+  - name: mpesa_callbacks
+    rules:
+
+      - alert: CallbackIngestFailureRate
+        expr: |
+          rate(mpesa_callbacks_received_total{result="failure"}[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: mpesa-gateway
+        annotations:
+          summary: "M-Pesa callback ingest failures detected"
+          description: "Confirmation callbacks are failing to persist to MongoDB. Safaricom will retry but events may be lost if this persists."
+
+      - alert: CallbackLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            rate(mpesa_callbacks_latency_seconds_bucket[5m])
+          ) > 4
+        for: 2m
+        labels:
+          severity: warning
+          service: mpesa-gateway
+        annotations:
+          summary: "M-Pesa callback ingest p95 latency above 4 seconds"
+          description: "Callback ingest p95 latency is {{ $value | humanizeDuration }}. Safaricom SLA is 8 seconds."
+
+  # ----------------------------------------------------------------------------
+  # M-Pesa Gateway — Outbox
+  # ----------------------------------------------------------------------------
+  - name: mpesa_outbox
+    rules:
+
+      - alert: OutboxBacklogGrowing
+        expr: mpesa_outbox_oldest_age_seconds > 300
+        for: 0m
+        labels:
+          severity: critical
+          service: mpesa-gateway
+        annotations:
+          summary: "Outbox backlog older than 5 minutes"
+          description: "The oldest PENDING outbox entry is {{ $value | humanizeDuration }} old. The outbox processor may be failing or RabbitMQ may be unavailable."
+
+      - alert: OutboxPendingEntries
+        expr: mpesa_outbox_pending > 20
+        for: 5m
+        labels:
+          severity: warning
+          service: mpesa-gateway
+        annotations:
+          summary: "Outbox has pending entries for more than 5 minutes"
+          description: "{{ $value }} outbox entries have been pending for over 5 minutes. Expected drain time is seconds under normal conditions."
+
+  # ----------------------------------------------------------------------------
+  # M-Pesa Gateway — Event State
+  # ----------------------------------------------------------------------------
+  - name: mpesa_events
+    rules:
+
+      - alert: SuspendedEventSpike
+        expr: |
+          rate(mpesa_events_transitions_total{state="SUSPENDED"}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          service: mpesa-gateway
+        annotations:
+          summary: "Elevated SUSPENDED event rate detected"
+          description: "Events are transitioning to SUSPENDED at {{ $value | humanizePercentage }} per second. Investigate UA Service rejections or provisioning failures."
+
+      - alert: ReceivedEventsStuck
+        expr: mpesa_events_state{state="RECEIVED"} > 20
+        for: 10m
+        labels:
+          severity: warning
+          service: mpesa-gateway
+        annotations:
+          summary: "Events stuck in RECEIVED state for more than 10 minutes"
+          description: "{{ $value }} events have been in RECEIVED state for over 10 minutes. Check outbox processor and provisioning pipeline."
+
+  # ----------------------------------------------------------------------------
+  # Provisioning Service
+  # ----------------------------------------------------------------------------
+  - name: provisioning
+    rules:
+
+      - alert: ProvisioningExhaustedRate
+        expr: |
+          rate(provisioning_calls_total{result="exhausted"}[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: provisioning-service
+        annotations:
+          summary: "Provisioning retries exhausted"
+          description: "Payments are failing after all retry attempts. Events will transition to SUSPENDED. Investigate UA Service availability."
+
+      - alert: ProvisioningNonRetryableRate
+        expr: |
+          rate(provisioning_calls_total{result="non_retryable"}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          service: provisioning-service
+        annotations:
+          summary: "Elevated non-retryable provisioning failures"
+          description: "UA Service is rejecting payments with 4xx responses at an elevated rate. Check account data and BillRefNumber normalisation."
+
+  # ----------------------------------------------------------------------------
+  # UA Service — Downstream Health
+  # ----------------------------------------------------------------------------
+  - name: ua_service
+    rules:
+
+      - alert: UaServiceHighErrorRate
+        expr: |
+          rate(ua_client_errors_total{status=~"5.."}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+          service: provisioning-service
+        annotations:
+          summary: "UA Service returning elevated 5xx error rate"
+          description: "UA Service is returning server errors at {{ $value }} per second. Retry and circuit breaker are active but sustained failures will cause SUSPENDED events."
+
+      - alert: UaServiceRateLimiting
+        expr: |
+          rate(ua_client_errors_total{status="429"}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          service: provisioning-service
+        annotations:
+          summary: "UA Service rate limiting provisioning requests"
+          description: "UA Service is returning HTTP 429 at {{ $value }} per second. Retry backoff is active. If sustained, check provisioning throughput vs rate limit configuration."
+
+      - alert: CircuitBreakerOpen
+        expr: |
+          resilience4j_circuitbreaker_state{state="open"} == 1
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Circuit breaker open on {{ $labels.name }}"
+          description: "The {{ $labels.name }} circuit breaker is open. UA Service calls are blocked. Recovery will be attempted after the configured wait duration."
