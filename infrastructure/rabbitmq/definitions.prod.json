@@ -1,8 +1,8 @@
 {
   "users": [
     {
-      "name": "mpesa-dev",
-      "password_hash": "4A7SkNdZZSCARB93Ls4gztZp1IG+AMkdbywzHPLJqWq1UY3e",
+      "name": "admin",
+      "password_hash": "S1ztycvRSY5Y3GTpEA6DRsbJD7uDNbQxr17y8YFEy40jkMfr",
       "hashing_algorithm": "rabbit_password_hashing_sha256",
       "tags": "administrator"
     }
@@ -13,7 +13,7 @@
   ],
   "permissions": [
     {
-      "user": "mpesa-dev",
+      "user": "admin",
       "vhost": "/payments",
       "configure": ".*",
       "write": ".*",
