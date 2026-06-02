@@ -1,0 +1,111 @@
+{
+  "users": [
+    {
+      "name": "admin",
+      "password_hash": "S1ztycvRSY5Y3GTpEA6DRsbJD7uDNbQxr17y8YFEy40jkMfr",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": "administrator"
+    }
+  ],
+  "vhosts": [
+    { "name": "/" },
+    { "name": "/payments" }
+  ],
+  "permissions": [
+    {
+      "user": "admin",
+      "vhost": "/payments",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "payments.exchange",
+      "vhost": "/payments",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "payments.dlx",
+      "vhost": "/payments",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "provisioning.queue",
+      "vhost": "/payments",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "payments.dlx",
+        "x-dead-letter-routing-key": "provisioning.request"
+      }
+    },
+    {
+      "name": "mpesa.results.queue",
+      "vhost": "/payments",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "payments.dlx",
+        "x-dead-letter-routing-key": "mpesa.result"
+      }
+    },
+    {
+      "name": "provisioning.dlq",
+      "vhost": "/payments",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    },
+    {
+      "name": "results.dlq",
+      "vhost": "/payments",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ],
+  "bindings": [
+    {
+      "source": "payments.exchange",
+      "vhost": "/payments",
+      "destination": "provisioning.queue",
+      "destination_type": "queue",
+      "routing_key": "provisioning.request",
+      "arguments": {}
+    },
+    {
+      "source": "payments.exchange",
+      "vhost": "/payments",
+      "destination": "mpesa.results.queue",
+      "destination_type": "queue",
+      "routing_key": "mpesa.result",
+      "arguments": {}
+    },
+    {
+      "source": "payments.dlx",
+      "vhost": "/payments",
+      "destination": "provisioning.dlq",
+      "destination_type": "queue",
+      "routing_key": "provisioning.request",
+      "arguments": {}
+    },
+    {
+      "source": "payments.dlx",
+      "vhost": "/payments",
+      "destination": "results.dlq",
+      "destination_type": "queue",
+      "routing_key": "mpesa.result",
+      "arguments": {}
+    }
+  ]
+}
