@@ -18,7 +18,7 @@
 #   kill $(cat mtn-simulator.pid)
 # ==============================================================================
 
-UA_URL="https://utility.oualidg.dev"
+UA_URL="http://127.0.0.1"
 API_KEY="0df87c1d-2dde-4a08-8f9f-7739b471073a"
 INTERVAL=0.1  # 10 req/s target
 
@@ -60,7 +60,7 @@ declare -a LATENCIES=()
 echo $$ > mtn-simulator.pid
 trap 'echo ""; echo "Stopped. Total=$TOTAL Success=$SUCCESS Failed=$FAILED"; rm -f mtn-simulator.pid; exit 0' INT TERM
 
-echo "MTN MoMo Simulator started at $(date) — 10 req/s via $UA_URL"
+echo "MTN MoMo Simulator started at $(date) — 10 req/s via $UA_URL (Host: utility.oualidg.dev)"
 
 while true; do
   IDX=$((TOTAL % COUNT))
@@ -78,6 +78,7 @@ while true; do
   RESPONSE=$(curl -s -o /dev/null -w "%{http_code} %{time_total}" \
     "$ENDPOINT" \
     -X POST \
+    -H "Host: utility.oualidg.dev" \
     -H "Content-Type: application/json" \
     -H "X-Api-Key: ${API_KEY}" \
     -d "{\"paymentReference\":\"${REFERENCE}\",\"amount\":${AMOUNT}}")

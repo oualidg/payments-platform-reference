@@ -11,16 +11,16 @@
 #
 # Usage:
 #   chmod +x mpesa-simulator.sh
-#   nohup ./mpesa-simulator.sh > simulator.log 2>&1 &
+#   nohup ./mpesa-simulator.sh > mpesa-simulator.log 2>&1 &
 #
 # Monitor:
-#   tail -f simulator.log
+#   tail -f mpesa-simulator.log
 #
 # Stop:
-#   kill $(cat simulator.pid)
+#   kill $(cat mpesa-simulator.pid)
 # ==============================================================================
 
-GATEWAY_URL="https://mpesa.oualidg.dev"
+GATEWAY_URL="http://127.0.0.1"
 CALLBACK_TOKEN="CfTJa5wCvGYFQx4rXt50"
 SHORT_CODE="600123"
 INTERVAL=0.1  # 10 req/s target
@@ -63,10 +63,10 @@ COUNT=${#CUSTOMER_IDS[@]}
 declare -a VAL_LATENCIES=()
 declare -a CONF_LATENCIES=()
 
-echo $$ > simulator.pid
-trap 'echo ""; echo "Stopped. Total=$TOTAL Success=$SUCCESS Failed=$FAILED ValidationFailed=$VALIDATION_FAILED ValidationRejected=$VALIDATION_REJECTED"; rm -f simulator.pid; exit 0' INT TERM
+echo $$ > mpesa-simulator.pid
+trap 'echo ""; echo "Stopped. Total=$TOTAL Success=$SUCCESS Failed=$FAILED ValidationFailed=$VALIDATION_FAILED ValidationRejected=$VALIDATION_REJECTED"; rm -f mpesa-simulator.pid; exit 0' INT TERM
 
-echo "M-Pesa Simulator started at $(date) — full C2B flow (validation + confirmation) via $GATEWAY_URL"
+echo "M-Pesa Simulator started at $(date) — full C2B flow (validation + confirmation) via $GATEWAY_URL (Host: mpesa.oualidg.dev)"
 
 while true; do
   IDX=$((TOTAL % COUNT))
@@ -86,6 +86,7 @@ while true; do
   VAL_RESPONSE=$(curl -s -w " %{http_code} %{time_total}" \
     "${GATEWAY_URL}/api/v1/validation?token=${CALLBACK_TOKEN}" \
     -X POST \
+    -H "Host: mpesa.oualidg.dev" \
     -H "Content-Type: application/json" \
     -d "$PAYLOAD")
 
@@ -124,6 +125,7 @@ while true; do
   CONF_RESPONSE=$(curl -s -o /dev/null -w "%{http_code} %{time_total}" \
     "${GATEWAY_URL}/api/v1/confirmation?token=${CALLBACK_TOKEN}" \
     -X POST \
+    -H "Host: mpesa.oualidg.dev" \
     -H "Content-Type: application/json" \
     -d "$PAYLOAD")
 
