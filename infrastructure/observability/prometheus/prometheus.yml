@@ -2,6 +2,8 @@
 # Prometheus Configuration — Payments Platform
 #
 # Scrapes metrics from all three application services every 15 seconds.
+# Also scrapes node-exporter (host-level metrics) and cadvisor (per-container
+# metrics) for server health monitoring.
 # Alert rules are loaded from the rules/ directory.
 #
 # Note: utility-account uses /api/prometheus (management.endpoints.web.base-path=/api)
@@ -55,3 +57,10 @@ scrape_configs:
           - localhost:9090
         labels:
           service: prometheus
+
+  - job_name: node-exporter
+    static_configs:
+      - targets:
+          - node-exporter:9100
+        labels:
+          service: node-exporter

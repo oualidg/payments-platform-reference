@@ -7,6 +7,7 @@
 #   - alloy:          Metrics scraping + log shipping agent (internal only)
 #   - alertmanager:   Alert routing and management (internal only)
 #   - grafana:        Dashboards and alerting UI (port 3000)
+#   - node-exporter:  Host-level CPU, memory, disk, network metrics (internal only)
 #
 # Network:
 #   Joins the existing payments-network so Prometheus can reach
@@ -26,6 +27,7 @@ services:
   #
   # - Scrapes /actuator/prometheus from mpesa-gateway and provisioning-service
   # - Scrapes /api/prometheus from utility-account (custom base path)
+  # - Scrapes node-exporter and cadvisor for host and container metrics
   # - 30 day retention
   # - Config reload via POST /-/reload without container restart
   # ----------------------------------------------------------------------------
@@ -125,6 +127,31 @@ services:
     depends_on:
       - prometheus
       - loki
+    networks:
+      - payments-network
+
+  # ----------------------------------------------------------------------------
+  # node-exporter — Host-Level Metrics
+  #
+  # - Exposes CPU, memory, disk, load average, and network metrics for the
+  #   underlying Ubuntu host
+  # - Read-only access to /proc, /sys, and / via bind mounts
+  # - pid: host required to see host-level process and network namespaces
+  # ----------------------------------------------------------------------------
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    restart: unless-stopped
+    pid: host
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
     networks:
       - payments-network
 
