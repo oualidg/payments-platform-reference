@@ -2,25 +2,24 @@
 # ==============================================================================
 # MTN MoMo Payment Simulator
 #
-# Simulates MTN MoMo payment deposits at a sustained rate via the public
-# Cloudflare Tunnel endpoint — mimicking real-world MTN MoMo traffic patterns.
+# Simulates MTN MoMo payment deposits via the public Cloudflare Tunnel
+# endpoint — mimicking real-world MTN MoMo traffic patterns.
 #
 # MTN MoMo calls the UA Service directly (no gateway) using API key auth.
 #
-# Usage:
-#   chmod +x mtn-simulator.sh
-#   nohup ./mtn-simulator.sh > mtn-simulator.log 2>&1 &
+# Traffic shaping:
+#   ~2,000,000 transactions/month, roughly 2x busier during the day
+#   (07:00-19:00) than at night, to feel like real customer traffic
+#   rather than a load test.
+#     Day   (07:00-19:00): avg interval ~1.0s  (range 0.5-1.45s)
+#     Night (19:00-07:00): avg interval ~1.9s  (range 1.0-2.9s)
 #
-# Monitor:
-#   tail -f mtn-simulator.log
-#
-# Stop:
-#   kill $(cat mtn-simulator.pid)
+# Run as a systemd service — see /opt/payments/testing/systemd/mtn-simulator.service
+# Logs via journald: journalctl -u mtn-simulator -f
 # ==============================================================================
 
 UA_URL="http://127.0.0.1"
 API_KEY="0df87c1d-2dde-4a08-8f9f-7739b471073a"
-INTERVAL=0.1  # 10 req/s target
 
 CUSTOMER_IDS=(
   "77873396" "22670335" "63890958" "76322627" "42285635"
@@ -60,9 +59,19 @@ declare -a LATENCIES=()
 echo $$ > mtn-simulator.pid
 trap 'echo ""; echo "Stopped. Total=$TOTAL Success=$SUCCESS Failed=$FAILED"; rm -f mtn-simulator.pid; exit 0' INT TERM
 
-echo "MTN MoMo Simulator started at $(date) — 10 req/s via $UA_URL (Host: utility.oualidg.dev)"
+echo "MTN MoMo Simulator started at $(date) via $UA_URL (Host: utility.oualidg.dev)"
 
 while true; do
+  # ── Day/night traffic shaping ────────────────────────────────────────────────
+  HOUR=$((10#$(date +%H)))  # 10# forces decimal (avoids octal issue with 08/09)
+  if (( HOUR >= 7 && HOUR < 19 )); then
+    MIN_INTERVAL=0.5
+    MAX_INTERVAL=1.45
+  else
+    MIN_INTERVAL=1.0
+    MAX_INTERVAL=2.9
+  fi
+
   IDX=$((TOTAL % COUNT))
   REFERENCE="MTN-$(date +%s%3N)-$((RANDOM))"
   AMOUNT=$(awk 'BEGIN{srand(); printf "%.2f", 10+rand()*490}')
@@ -115,5 +124,5 @@ while true; do
     echo "$(date '+%H:%M:%S') total=${TOTAL} success=${SUCCESS} failed=${FAILED} elapsed=${ELAPSED}s p50=${P50}ms p95=${P95}ms"
   fi
 
-  sleep "${INTERVAL}"
+  sleep "$(awk -v min="$MIN_INTERVAL" -v max="$MAX_INTERVAL" 'BEGIN{srand(); printf "%.1f", min + rand() * (max - min)}')"
 done

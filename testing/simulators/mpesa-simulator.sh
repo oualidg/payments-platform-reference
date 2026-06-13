@@ -2,28 +2,27 @@
 # ==============================================================================
 # M-Pesa Callback Simulator
 #
-# Simulates the full Safaricom C2B flow at a sustained rate via the public
-# Cloudflare Tunnel endpoint — mimicking real-world M-Pesa traffic patterns.
+# Simulates the full Safaricom C2B flow via the public Cloudflare Tunnel
+# endpoint — mimicking real-world M-Pesa traffic patterns.
 #
 # Flow per transaction:
 #   1. POST /mpesa/validation  — pre-payment check (Safaricom validates before funds move)
 #   2. POST /mpesa/confirmation — authoritative payment event (only if validation accepted)
 #
-# Usage:
-#   chmod +x mpesa-simulator.sh
-#   nohup ./mpesa-simulator.sh > mpesa-simulator.log 2>&1 &
+# Traffic shaping:
+#   ~2,000,000 transactions/month, roughly 2x busier during the day
+#   (07:00-19:00) than at night, to feel like real customer traffic
+#   rather than a load test.
+#     Day   (07:00-19:00): avg interval ~1.0s  (range 0.5-1.45s)
+#     Night (19:00-07:00): avg interval ~1.9s  (range 1.0-2.9s)
 #
-# Monitor:
-#   tail -f mpesa-simulator.log
-#
-# Stop:
-#   kill $(cat mpesa-simulator.pid)
+# Run as a systemd service — see /opt/payments/testing/systemd/mpesa-simulator.service
+# Logs via journald: journalctl -u mpesa-simulator -f
 # ==============================================================================
 
 GATEWAY_URL="http://127.0.0.1"
 CALLBACK_TOKEN="CfTJa5wCvGYFQx4rXt50"
 SHORT_CODE="600123"
-INTERVAL=0.1  # 10 req/s target
 
 CUSTOMER_IDS=(
   "77873396" "22670335" "63890958" "76322627" "42285635"
@@ -69,6 +68,16 @@ trap 'echo ""; echo "Stopped. Total=$TOTAL Success=$SUCCESS Failed=$FAILED Valid
 echo "M-Pesa Simulator started at $(date) — full C2B flow (validation + confirmation) via $GATEWAY_URL (Host: mpesa.oualidg.dev)"
 
 while true; do
+  # ── Day/night traffic shaping ────────────────────────────────────────────────
+  HOUR=$((10#$(date +%H)))  # 10# forces decimal (avoids octal issue with 08/09)
+  if (( HOUR >= 7 && HOUR < 19 )); then
+    MIN_INTERVAL=0.5
+    MAX_INTERVAL=1.45
+  else
+    MIN_INTERVAL=1.0
+    MAX_INTERVAL=2.9
+  fi
+
   IDX=$((TOTAL % COUNT))
   TRANS_ID="SIM-$(date +%s%3N)-$((RANDOM))"
   AMOUNT=$(awk 'BEGIN{srand(); printf "%.2f", 10+rand()*490}')
@@ -108,7 +117,7 @@ while true; do
     VALIDATION_FAILED=$((VALIDATION_FAILED + 1))
     FAILED=$((FAILED + 1))
     echo "$(date '+%H:%M:%S') VALIDATION HTTP FAILED status=${VAL_STATUS} time=${VAL_TIME_MS}ms transId=${TRANS_ID}"
-    sleep "${INTERVAL}"
+    sleep "$(awk -v min="$MIN_INTERVAL" -v max="$MAX_INTERVAL" 'BEGIN{srand(); printf "%.1f", min + rand() * (max - min)}')"
     continue
   fi
 
@@ -117,7 +126,7 @@ while true; do
   if [ "$RESULT_CODE" != "0" ]; then
     VALIDATION_REJECTED=$((VALIDATION_REJECTED + 1))
     echo "$(date '+%H:%M:%S') VALIDATION REJECTED resultCode=${RESULT_CODE} billRef=${BILL_REF} transId=${TRANS_ID}"
-    sleep "${INTERVAL}"
+    sleep "$(awk -v min="$MIN_INTERVAL" -v max="$MAX_INTERVAL" 'BEGIN{srand(); printf "%.1f", min + rand() * (max - min)}')"
     continue
   fi
 
@@ -167,5 +176,5 @@ while true; do
     echo "$(date '+%H:%M:%S') total=${TOTAL} success=${SUCCESS} failed=${FAILED} valRejected=${VALIDATION_REJECTED} elapsed=${ELAPSED}s val_p50=${VAL_P50}ms val_p95=${VAL_P95}ms conf_p50=${CONF_P50}ms conf_p95=${CONF_P95}ms"
   fi
 
-  sleep "${INTERVAL}"
+  sleep "$(awk -v min="$MIN_INTERVAL" -v max="$MAX_INTERVAL" 'BEGIN{srand(); printf "%.1f", min + rand() * (max - min)}')"
 done
