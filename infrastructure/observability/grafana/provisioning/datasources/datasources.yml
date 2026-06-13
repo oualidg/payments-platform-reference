@@ -3,19 +3,24 @@
 #
 # Provisioned automatically on Grafana startup.
 # Prometheus and Loki are reachable by container name on payments-network.
+#
+# manageAlerts: true on Prometheus lets Grafana discover and display the
+# rule groups defined in observability/prometheus/rules/*.yml via
+# Prometheus's ruler API (/api/v1/rules), so they appear in Grafana's
+# Alerting UI and in "Alert list" panels.
 # ==============================================================================
-
 apiVersion: 1
-
 datasources:
-
   - name: Prometheus
     type: prometheus
     access: proxy
     url: http://prometheus:9090
     isDefault: true
     editable: false
-
+    jsonData:
+      manageAlerts: true
+      prometheusType: Prometheus
+      prometheusVersion: 3.4.0
   - name: Loki
     type: loki
     access: proxy
